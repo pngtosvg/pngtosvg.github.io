@@ -63,6 +63,10 @@ test('solid backgrounds can be removed', () => {
   assert.equal(kept.width, src.width, 'opaque background: nothing to trim')
   assert.ok(removed.width < src.width, 'background removed, then trimmed')
   assert.equal(rasterize(removed.svg).data[3], 0)
+  // Anti-aliased edges are un-blended from the old background: no fringe colors or slivers.
+  const transparent = traceImage(rasterize(fixture('logo.svg')), settingsForPreset('logo'))
+  assert.deepEqual([...removed.colors].sort(), [...transparent.colors].sort())
+  assert.equal(removed.paths, transparent.paths)
 })
 
 test('every preset and layering produces a valid SVG', () => {

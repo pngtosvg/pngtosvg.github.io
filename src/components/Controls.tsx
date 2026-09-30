@@ -5,9 +5,11 @@ import { SlidersIcon } from './icons.tsx'
 interface Props {
   settings: TraceSettings
   onChange: (settings: TraceSettings) => void
+  /** The image has an opaque, uniform background that could be removed. */
+  solidBackground?: boolean
 }
 
-export function Controls({ settings, onChange }: Props) {
+export function Controls({ settings, onChange, solidBackground }: Props) {
   const [open, setOpen] = useState(false)
   const set = <K extends keyof TraceSettings>(key: K, value: TraceSettings[K]) => onChange({ ...settings, [key]: value })
   const preset = PRESETS.find((p) => p.id === settings.preset)!
@@ -42,6 +44,14 @@ export function Controls({ settings, onChange }: Props) {
           <SlidersIcon /> Adjust
         </button>
       </div>
+      {solidBackground && !settings.removeBackground && (
+        <p className="suggest small">
+          Solid background detected.{' '}
+          <button className="link-btn" onClick={() => set('removeBackground', true)}>
+            Make it transparent
+          </button>
+        </p>
+      )}
       {open && (
         <div className="adjust" id="adjust-panel">
           <Slider label="Colors" min={1} max={64} value={settings.colors} onChange={(v) => set('colors', v)} />

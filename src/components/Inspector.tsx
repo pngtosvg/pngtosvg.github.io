@@ -56,9 +56,9 @@ export function Inspector({ svg, selection, onEdit, onSelectionChange, onDelete,
     <aside className="inspector" aria-label="Edit SVG">
       {selected.length ? (
         <section className="panel">
-          <h3>
+          <div className="panel-title">
             Selection <span className="muted">{selected.length === 1 ? '1 shape' : `${selected.length} shapes`}</span>
-          </h3>
+          </div>
           <div className="field">
             <span className="field-label">Fill</span>
             <ColorField
@@ -103,7 +103,7 @@ export function Inspector({ svg, selection, onEdit, onSelectionChange, onDelete,
         </section>
       ) : (
         <section className="panel hint-panel">
-          <h3>Edit</h3>
+          <div className="panel-title">Edit</div>
           <p className="muted small">
             Click a shape to select it, <kbd>Shift</kbd>-click to add more. Drag to move, pull a corner to resize
             (<kbd>Shift</kbd> for free aspect). Arrow keys nudge, <kbd>Del</kbd> removes.
@@ -111,9 +111,9 @@ export function Inspector({ svg, selection, onEdit, onSelectionChange, onDelete,
         </section>
       )}
       <section className="panel">
-        <h3>
+        <div className="panel-title">
           Colors <span className="muted">{palette.length}</span>
-        </h3>
+        </div>
         <ul className="palette">
           {palette.map(({ color, count }) => (
             <li key={color}>

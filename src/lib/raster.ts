@@ -44,15 +44,18 @@ export function crop(img: Bitmap, r: Rect): Bitmap {
 /**
  * Makes a solid background transparent by flood-filling from the image border.
  * Only pixels connected to the edge and close to the dominant border color are removed,
- * so matching colors inside the artwork (e.g. white text) are kept.
+ * so matching colors inside the artwork (e.g. white text) are kept. Along the cut, the
+ * anti-aliased pixels are "un-blended" from the background color, so edges come out
+ * softly transparent instead of keeping a fringe of the old background.
  */
 export function removeBackground(img: Bitmap, tolerance = 32): Bitmap {
   const { width: w, height: h } = img
   const src = img.data
-  const bg = borderColor(img)
-  if (!bg) return img
+  const approx = borderColor(img)
+  if (!approx) return img
   const data = new Uint8ClampedArray(src)
   const tol2 = tolerance * tolerance * 3
+  const removed = new Uint8Array(w * h)
   const seen = new Uint8Array(w * h)
   const stack: number[] = []
   const push = (p: number) => {
@@ -60,21 +63,107 @@ export function removeBackground(img: Bitmap, tolerance = 32): Bitmap {
     seen[p] = 1
     const i = p * 4
     if (data[i + 3] < 16) { stack.push(p); return }
-    const dr = data[i] - bg[0], dg = data[i + 1] - bg[1], db = data[i + 2] - bg[2]
+    const dr = data[i] - approx[0], dg = data[i + 1] - approx[1], db = data[i + 2] - approx[2]
     if (dr * dr + dg * dg + db * db <= tol2) stack.push(p)
   }
   for (let x = 0; x < w; x++) { push(x); push((h - 1) * w + x) }
   for (let y = 0; y < h; y++) { push(y * w); push(y * w + w - 1) }
+  let sr = 0, sg = 0, sb = 0, sn = 0
   while (stack.length) {
     const p = stack.pop()!
-    data[p * 4 + 3] = 0
+    const i = p * 4
+    if (data[i + 3] >= 250) { sr += data[i]; sg += data[i + 1]; sb += data[i + 2]; sn++ }
+    removed[p] = 1
+    data[i + 3] = 0
     const x = p % w, y = (p / w) | 0
     if (x > 0) push(p - 1)
     if (x < w - 1) push(p + 1)
     if (y > 0) push(p - w)
     if (y < h - 1) push(p + w)
   }
+  if (!sn) return { width: w, height: h, data }
+  const bg = [sr / sn, sg / sn, sb / sn]
+
+  // Soften the cut. Pixels within 2px of the removed area may be anti-aliased blends of
+  // the background with the artwork: take the foreground color from the nearest pixel
+  // further in, and the alpha from how far the pixel is from background to foreground.
+  const R = 2
+  const band = new Uint8Array(w * h)
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const p = y * w + x
+      if (removed[p] || data[p * 4 + 3] === 0) continue
+      search: for (let dy = -R; dy <= R; dy++) {
+        const yy = y + dy
+        if (yy < 0 || yy >= h) continue
+        for (let dx = -R; dx <= R; dx++) {
+          const xx = x + dx
+          if (xx >= 0 && xx < w && removed[yy * w + xx]) { band[p] = 1; break search }
+        }
+      }
+    }
+  }
+  const S = R + 2
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const p = y * w + x
+      if (!band[p]) continue
+      // Nearest solid pixel outside the band.
+      let best = -1, bestD = Infinity
+      for (let dy = -S; dy <= S; dy++) {
+        const yy = y + dy
+        if (yy < 0 || yy >= h) continue
+        for (let dx = -S; dx <= S; dx++) {
+          const xx = x + dx
+          if (xx < 0 || xx >= w) continue
+          const q = yy * w + xx
+          if (removed[q] || band[q] || src[q * 4 + 3] < 250) continue
+          const dd = dx * dx + dy * dy
+          if (dd < bestD) { bestD = dd; best = q }
+        }
+      }
+      const i = p * 4
+      const fg = best >= 0 ? [src[best * 4], src[best * 4 + 1], src[best * 4 + 2]] : null
+      let a: number
+      if (fg) {
+        const fb = [fg[0] - bg[0], fg[1] - bg[1], fg[2] - bg[2]]
+        const len2 = fb[0] * fb[0] + fb[1] * fb[1] + fb[2] * fb[2]
+        if (len2 < 30 * 30) continue // foreground too close to the background to tell apart
+        a = ((src[i] - bg[0]) * fb[0] + (src[i + 1] - bg[1]) * fb[1] + (src[i + 2] - bg[2]) * fb[2]) / len2
+        a = Math.min(1, Math.max(0, a))
+        if (a < 0.999) for (let c = 0; c < 3; c++) data[i + c] = fg[c]
+      } else {
+        // Thin artwork with no solid pixel nearby: classic "color to alpha".
+        a = 0
+        for (let c = 0; c < 3; c++) {
+          const v = src[i + c], b = bg[c]
+          const ca = v > b ? (b < 255 ? (v - b) / (255 - b) : 0) : v < b ? (b > 0 ? (b - v) / b : 0) : 0
+          if (ca > a) a = ca
+        }
+        a = Math.min(1, a)
+        if (a > 0.004 && a < 0.999) for (let c = 0; c < 3; c++) data[i + c] = bg[c] + (src[i + c] - bg[c]) / a
+      }
+      data[i + 3] = a <= 0.004 ? 0 : src[i + 3] * a
+    }
+  }
   return { width: w, height: h, data }
+}
+
+/** True if the image sits on an opaque, uniform background (e.g. a logo exported on white). */
+export function hasSolidBackground(img: Bitmap): boolean {
+  const bg = borderColor(img)
+  if (!bg) return false
+  const { width: w, height: h, data } = img
+  let total = 0, match = 0
+  const check = (x: number, y: number) => {
+    const i = (y * w + x) * 4
+    total++
+    const dr = data[i] - bg[0], dg = data[i + 1] - bg[1], db = data[i + 2] - bg[2]
+    if (data[i + 3] >= 200 && dr * dr + dg * dg + db * db <= 40 * 40) match++
+  }
+  for (let x = 0; x < w; x++) { check(x, 0); check(x, h - 1) }
+  for (let y = 1; y < h - 1; y++) { check(0, y); check(w - 1, y) }
+  return match >= total * 0.9
 }
 
 /** Most common opaque color on the image border, if the border is mostly one color. */

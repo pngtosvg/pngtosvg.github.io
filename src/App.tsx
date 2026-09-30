@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { Controls } from './components/Controls.tsx'
 import { DropZone } from './components/DropZone.tsx'
 import { ExportBar } from './components/ExportBar.tsx'
@@ -8,6 +8,7 @@ import { CloseIcon, FitIcon, RedoIcon, UndoIcon, UploadIcon, ZoomInIcon, ZoomOut
 import { baseName, byteLength, formatBytes, loadImage, type LoadedImage } from './lib/image.ts'
 import type { OptimizeResult } from './lib/optimize.ts'
 import { DEFAULT_SETTINGS, type TraceSettings } from './lib/presets.ts'
+import { hasSolidBackground } from './lib/raster.ts'
 import { editSvg, matrixOf, setMatrix, SHAPE_SELECTOR } from './lib/svgdoc.ts'
 import type { TraceResult } from './lib/vectorize.ts'
 import { useHistory } from './lib/useHistory.ts'
@@ -38,6 +39,8 @@ export function App() {
   const history = useHistory<string>()
   const svg = history.present
   const { push } = history
+  const rawBytes = useMemo(() => (svg ? byteLength(svg) : 0), [svg])
+  const solidBackground = useMemo(() => (image ? hasSolidBackground(image.bitmap) : false), [image])
 
   // ---- Loading -------------------------------------------------------------------------
 
@@ -300,7 +303,7 @@ export function App() {
   return (
     <div className={`workspace ${dragOver ? 'drag-over' : ''}`} {...dropProps}>
       <div className="topbar">
-        <Controls settings={settings} onChange={setSettings} />
+        <Controls settings={settings} onChange={setSettings} solidBackground={solidBackground} />
         <div className="file-chip" title={image.name}>
           <span className="file-name">{image.name}</span>
           <span className="muted small">
@@ -326,61 +329,92 @@ export function App() {
       </div>
 
       <div className="main">
-        <div className="compare">
-          <figure className="pane">
-            <figcaption>
-              <span>PNG input</span>
-              <span className="muted small">
-                {trimmed ? 'trimmed view · ' : ''}
-                {formatBytes(image.bytes)}
-              </span>
-            </figcaption>
-            <div className={`viewport bg-${backdrop}`} style={paneVars(view.width / view.height, zoom)}>
-              <div className="stage crop">
-                {/* Show the same (trimmed) region as the SVG so both sides line up. */}
-                <img
-                  src={image.url}
-                  alt="Original PNG"
-                  draggable={false}
-                  style={{
-                    width: `${(image.bitmap.width / view.width) * 100}%`,
-                    marginLeft: `${(-view.x / view.width) * 100}%`,
-                    marginTop: `${(-view.y / view.width) * 100}%`,
-                  }}
-                />
-              </div>
-            </div>
-          </figure>
-
-          <figure className="pane">
-            <figcaption>
-              <span>SVG output</span>
-              <span className="muted small">
-                {info ? `${plural(info.colors.length, 'color')} · ${plural(info.paths, 'path')} · ${Math.round(info.ms)} ms` : ''}
-              </span>
-            </figcaption>
-            <div
-              className={`viewport bg-${backdrop}`}
-              style={paneVars(view.width / view.height, zoom)}
-            >
-              {svg && (
-                <SvgEditor
-                  svg={svg}
-                  selection={selection}
-                  zoom={zoom}
-                  onSelectionChange={setSelection}
-                  onCommit={(s) => push(s)}
-                />
-              )}
-              {tracing && (
-                <div className="progress" role="status" aria-live="polite">
-                  <div className="progress-bar" style={{ transform: `scaleX(${Math.max(0.04, progress)})` }} />
-                  <span>Vectorizing… {Math.round(progress * 100)}%</span>
+        <div className="canvas-col">
+          <div className="compare">
+            <figure className="pane">
+              <figcaption>
+                <span>PNG input</span>
+                <span className="muted small">
+                  {trimmed ? 'trimmed view · ' : ''}
+                  {formatBytes(image.bytes)}
+                </span>
+              </figcaption>
+              <div className={`viewport bg-${backdrop}`} style={paneVars(view.width / view.height, zoom)}>
+                <div className="stage crop">
+                  {/* Show the same (trimmed) region as the SVG so both sides line up. */}
+                  <img
+                    src={image.url}
+                    alt="Original PNG"
+                    draggable={false}
+                    style={{
+                      width: `${(image.bitmap.width / view.width) * 100}%`,
+                      marginLeft: `${(-view.x / view.width) * 100}%`,
+                      marginTop: `${(-view.y / view.width) * 100}%`,
+                    }}
+                  />
                 </div>
-              )}
-              {traceError && <p className="error overlay-msg">{traceError}</p>}
+              </div>
+            </figure>
+
+            <figure className="pane">
+              <figcaption>
+                <span>SVG output</span>
+                <span className="muted small">
+                  {info ? `${plural(info.colors.length, 'color')} · ${plural(info.paths, 'path')} · ${Math.round(info.ms)} ms` : ''}
+                </span>
+              </figcaption>
+              <div
+                className={`viewport bg-${backdrop}`}
+                style={paneVars(view.width / view.height, zoom)}
+              >
+                {svg && (
+                  <SvgEditor
+                    svg={svg}
+                    selection={selection}
+                    zoom={zoom}
+                    onSelectionChange={setSelection}
+                    onCommit={(s) => push(s)}
+                  />
+                )}
+                {tracing && (
+                  <div className="progress" role="status" aria-live="polite">
+                    <div className="progress-bar" style={{ transform: `scaleX(${Math.max(0.04, progress)})` }} />
+                    <span>Vectorizing… {Math.round(progress * 100)}%</span>
+                  </div>
+                )}
+                {traceError && <p className="error overlay-msg">{traceError}</p>}
+              </div>
+            </figure>
+          </div>
+          <div className="viewbar">
+            <div className="btn-group">
+              <button className="icon-btn" onClick={() => { history.undo(); setSelection([]) }} disabled={!history.canUndo} title="Undo (Ctrl+Z)" aria-label="Undo">
+                <UndoIcon />
+              </button>
+              <button className="icon-btn" onClick={() => { history.redo(); setSelection([]) }} disabled={!history.canRedo} title="Redo (Ctrl+Shift+Z)" aria-label="Redo">
+                <RedoIcon />
+              </button>
             </div>
-          </figure>
+            <div className="btn-group">
+              <button className="icon-btn" onClick={() => zoomBy(-1)} title="Zoom out" aria-label="Zoom out"><ZoomOutIcon /></button>
+              <button className="zoom-level" onClick={() => setZoom(1)} title="Fit to view">
+                {zoom === 1 ? <FitIcon /> : `${Math.round(zoom * 100)}%`}
+              </button>
+              <button className="icon-btn" onClick={() => zoomBy(1)} title="Zoom in" aria-label="Zoom in"><ZoomInIcon /></button>
+            </div>
+            <div className="btn-group backdrops" role="radiogroup" aria-label="Preview background">
+              {(['checker', 'light', 'dark'] as Backdrop[]).map((b) => (
+                <button
+                  key={b}
+                  role="radio"
+                  aria-checked={backdrop === b}
+                  className={`backdrop-btn bg-${b} ${backdrop === b ? 'on' : ''}`}
+                  onClick={() => setBackdrop(b)}
+                  title={`${b[0].toUpperCase()}${b.slice(1)} background`}
+                />
+              ))}
+            </div>
+          </div>
         </div>
 
         {svg && (
@@ -396,39 +430,9 @@ export function App() {
         )}
       </div>
 
-      <div className="viewbar">
-        <div className="btn-group">
-          <button className="icon-btn" onClick={() => { history.undo(); setSelection([]) }} disabled={!history.canUndo} title="Undo (Ctrl+Z)" aria-label="Undo">
-            <UndoIcon />
-          </button>
-          <button className="icon-btn" onClick={() => { history.redo(); setSelection([]) }} disabled={!history.canRedo} title="Redo (Ctrl+Shift+Z)" aria-label="Redo">
-            <RedoIcon />
-          </button>
-        </div>
-        <div className="btn-group">
-          <button className="icon-btn" onClick={() => zoomBy(-1)} title="Zoom out" aria-label="Zoom out"><ZoomOutIcon /></button>
-          <button className="zoom-level" onClick={() => setZoom(1)} title="Fit to view">
-            {zoom === 1 ? <FitIcon /> : `${Math.round(zoom * 100)}%`}
-          </button>
-          <button className="icon-btn" onClick={() => zoomBy(1)} title="Zoom in" aria-label="Zoom in"><ZoomInIcon /></button>
-        </div>
-        <div className="btn-group backdrops" role="radiogroup" aria-label="Preview background">
-          {(['checker', 'light', 'dark'] as Backdrop[]).map((b) => (
-            <button
-              key={b}
-              role="radio"
-              aria-checked={backdrop === b}
-              className={`backdrop-btn bg-${b} ${backdrop === b ? 'on' : ''}`}
-              onClick={() => setBackdrop(b)}
-              title={`${b[0].toUpperCase()}${b.slice(1)} background`}
-            />
-          ))}
-        </div>
-      </div>
-
       <ExportBar
         pngBytes={image.bytes}
-        rawBytes={svg ? byteLength(svg) : 0}
+        rawBytes={rawBytes}
         optimizedBytes={optimized?.source === svg ? optimized.bytes : null}
         disabled={!svg}
         onCopy={copy}
