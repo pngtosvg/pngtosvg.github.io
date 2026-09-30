@@ -1091,6 +1091,10 @@ input[type='range'] {
 .footer-inner p {
   margin: 0 0 4px;
 }
+.footer-inner a {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
 
 /* ---------- Responsive ---------- */
 @media (max-width: 1000px) {
