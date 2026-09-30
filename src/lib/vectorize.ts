@@ -31,6 +31,8 @@ export function traceImage(
   source: Bitmap,
   settings: TraceSettings,
   onProgress?: (fraction: number) => void,
+  /** Size of the original image relative to `source`, when it was decoded smaller. */
+  displayScale = 1,
 ): TraceResult {
   const preset = getPreset(settings.preset)
   let img = settings.removeBackground ? removeBackground(source) : source
@@ -52,7 +54,7 @@ export function traceImage(
   const outW = region.width, outH = region.height
   const offX = region.x - traced.x, offY = region.y - traced.y
 
-  // Huge images are traced at a reduced size (the output keeps the original size).
+  // Huge images are traced at a reduced size (the output keeps the input's size).
   const longest = Math.max(img.width, img.height)
   const k = longest > preset.maxWorkSize ? preset.maxWorkSize / longest : 1
   const w = Math.max(1, Math.round(img.width * k))
@@ -98,6 +100,8 @@ export function traceImage(
     cornerAngle: ((15 + s * 80) * Math.PI) / 180,
     cornerWindow: 1.6 + s * 2,
     sharpen: 2.5 * (1 - s * 0.7),
+    // Separate shapes extend only ~1px under the colors above them.
+    sharpenConcave: settings.layering === 'separate' ? 0.8 : undefined,
   }
   const minArea = ((0.8 + (1 - d) * 4.5) * (preset.flat ? 1 : 1.6)) ** 2
   const decimals = Math.max(outW, outH) <= 128 ? 2 : 1
@@ -133,12 +137,12 @@ export function traceImage(
       // own shape. `field - own` is the coverage of the colors above. Any pixel this
       // color has a real share of (edges, gradients, junctions of several colors)
       // reaches as far as one it fully owns; the extension stays hidden either way.
-      // A blurred-and-amplified copy is a smooth ~1px dilation (a max filter would
+      // A blurred-and-amplified copy is a smooth dilation of ~1.5px: enough to absorb
+      // the fitting tolerance of both shapes plus notch sharpening (a max filter would
       // leave a pixel staircase for the tracer to follow).
       for (let p = 0; p < n; p++) reach[p] = Math.min(1, own[p] * 4)
-      blur121(reach, w, h)
-      blur121(reach, w, h)
-      for (let p = 0; p < n; p++) field[p] = Math.max(own[p], Math.min(Math.min(1, reach[p] * 3), field[p] - own[p]))
+      for (let k = 0; k < UNDERLAP_BLUR; k++) blur121(reach, w, h)
+      for (let p = 0; p < n; p++) field[p] = Math.max(own[p], Math.min(Math.min(1, reach[p] * UNDERLAP_GAIN), field[p] - own[p]))
     }
 
     // Pad by repeating the border pixels: shapes that touch the image edge continue past
@@ -157,8 +161,9 @@ export function traceImage(
     onProgress?.(0.25 + (0.75 * (r + 1)) / order.length)
   }
 
+  const dw = Math.round(outW * displayScale), dh = Math.round(outH * displayScale)
   const svg =
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${outW}" height="${outH}" viewBox="0 0 ${outW} ${outH}">\n` +
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${dw}" height="${dh}" viewBox="0 0 ${outW} ${outH}">\n` +
     parts.join('\n') +
     (parts.length ? '\n' : '') +
     `</svg>\n`
@@ -242,6 +247,9 @@ interface PathTransform {
 }
 
 const PAD = 2
+/** Blur passes and gain that set how far separate shapes extend under upper colors. */
+const UNDERLAP_BLUR = 3
+const UNDERLAP_GAIN = 6
 
 function padEdges(src: Float32Array, w: number, h: number, pad: number): Float32Array {
   const W = w + 2 * pad, H = h + 2 * pad
@@ -287,8 +295,7 @@ function despeckle(main: Int16Array, second: Int16Array, mix: Float32Array, alph
       if (p >= w && !seen[p - w] && main[p - w] === label) { seen[p - w] = 1; stack.push(p - w) }
       if (p < n - w && !seen[p + w] && main[p + w] === label) { seen[p + w] = 1; stack.push(p + w) }
     }
-    if (region.length >= minArea) continue
-    // Weighted by coverage, so faint edge pixels of a speck don't count as a big region.
+    // Size weighted by coverage, so a spread of faint pixels still counts as a speck.
     let mass = 0
     for (const p of region) mass += alpha[p]
     if (mass >= minArea) continue

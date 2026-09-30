@@ -23,6 +23,12 @@ export interface FitOptions {
   cornerWindow: number
   /** Max distance (px) a corner may move when sharpened. */
   sharpen: number
+  /**
+   * Max distance for corners that cut into the filled side (notches). Sharpening those
+   * uncovers area that a shape underneath has to fill, so it must stay within how far
+   * lower shapes extend under this one.
+   */
+  sharpenConcave?: number
 }
 
 type Pt = { x: number; y: number }
@@ -82,9 +88,9 @@ export function fitOutline(flat: Float64Array, opts: FitOptions): Outline | null
 
   // Corners: local maxima above the threshold, at least W apart. Small round blobs
   // (dots, bullets) are pixel polygons at this scale: they never get corners.
+  if (perimeter < 40 && isRound(pts)) return circleOutline(pts)
   const corners: number[] = []
-  const isDot = perimeter < 40 && isRound(pts)
-  for (let i = 0; i < n && !isDot; i++) {
+  for (let i = 0; i < n; i++) {
     if (turn[i] < opts.cornerAngle || turnAt(i, W / 2) < turn[i] * 0.6) continue
     let isMax = true
     for (let j = 1; isMax && j < n; j++) {
@@ -123,7 +129,10 @@ export function fitOutline(flat: Float64Array, opts: FitOptions): Outline | null
     if (inT && outT) {
       const interior = Math.PI - Math.acos(Math.max(-1, Math.min(1, dot(inT.dir, outT.dir))))
       // Anti-aliasing cuts a sharp corner back by about half a pixel / tan(angle / 2).
-      const limit = Math.min(opts.sharpen, 0.75 / Math.tan(Math.max(0.05, interior / 2)))
+      let limit = Math.min(opts.sharpen, 0.75 / Math.tan(Math.max(0.05, interior / 2)))
+      // The filled side is always on the same side of the contour, so a positive turn
+      // is a notch into the shape.
+      if (cross(inT.dir, outT.dir) > 0) limit = Math.min(limit, opts.sharpenConcave ?? Infinity)
       const x = intersect(inT.p, inT.dir, outT.p, outT.dir)
       if (x && dist(x, pts[ci]) <= limit) {
         kept.push({ i: ci, pos: x, dIn: inT.dir, dOut: outT.dir, sharp: true })
@@ -144,9 +153,11 @@ export function fitOutline(flat: Float64Array, opts: FitOptions): Outline | null
   const segs: Seg[] = []
   if (kept.length === 0) {
     // Smooth closed curve: fit all the way around, with a continuous tangent at the seam.
-    const sm = smoothLoop(pts, 2)
+    const sm = n >= 12 ? smoothLoop(pts, 2) : pts
     const loop = [...sm, sm[0]]
-    const tan = norm(sub(sm[Math.min(3, n - 1)], sm[n - Math.min(3, n - 1)]))
+    // Tangent at the seam: from a point a few steps back to one a few steps ahead.
+    const k = Math.max(1, Math.min(3, Math.floor((n - 1) / 2)))
+    const tan = norm(sub(sm[k], sm[n - k]))
     fitRun(loop, tan, mul(tan, -1), opts.tolerance, segs)
     return { x: sm[0].x, y: sm[0].y, segs }
   }
@@ -165,7 +176,7 @@ export function fitOutline(flat: Float64Array, opts: FitOptions): Outline | null
       if (d > span) break
     }
     run.push(B.pos)
-    fitRun(smoothRun(run, 2), A.dOut, mul(B.dIn, -1), opts.tolerance, segs)
+    fitRun(run.length >= 8 ? smoothRun(run, 2) : run, A.dOut, mul(B.dIn, -1), opts.tolerance, segs)
   }
   const start = kept[0].pos
   return { x: start.x, y: start.y, segs: mergeLines(start, segs, opts.tolerance * 0.5) }
@@ -199,6 +210,36 @@ function smoothRun(p: Pt[], passes: number): Pt[] {
     ))
   for (let i = 0; i < passes; i++) { step(0.5); step(-0.53) }
   return cur
+}
+
+/**
+ * An exact circle (four cubic arcs) through the centroid and mean radius of the points,
+ * wound the same way as the contour so holes stay holes.
+ */
+function circleOutline(p: Pt[]): Outline {
+  let cx = 0, cy = 0, area = 0
+  for (let i = 0; i < p.length; i++) {
+    const a = p[i], b = p[(i + 1) % p.length]
+    cx += a.x; cy += a.y
+    area += a.x * b.y - b.x * a.y
+  }
+  cx /= p.length; cy /= p.length
+  const r = p.reduce((acc, q) => acc + Math.hypot(q.x - cx, q.y - cy), 0) / p.length
+  const dir = area >= 0 ? 1 : -1
+  const k = 0.5522847498 * r
+  const segs: Seg[] = []
+  for (let q = 1; q <= 4; q++) {
+    const a0 = (dir * (q - 1) * Math.PI) / 2, a1 = (dir * q * Math.PI) / 2
+    const x0 = cx + r * Math.cos(a0), y0 = cy + r * Math.sin(a0)
+    const x1 = cx + r * Math.cos(a1), y1 = cy + r * Math.sin(a1)
+    segs.push({
+      c: 'C',
+      x1: x0 - dir * k * Math.sin(a0), y1: y0 + dir * k * Math.cos(a0),
+      x2: x1 + dir * k * Math.sin(a1), y2: y1 - dir * k * Math.cos(a1),
+      x: x1, y: y1,
+    })
+  }
+  return { x: cx + r, y: cy, segs }
 }
 
 /** True if the points lie on a circle within ~0.35 px. */
@@ -432,9 +473,13 @@ function fitCubic(d: Pt[], first: number, last: number, tHat1: Pt, tHat2: Pt, er
     return
   }
   split = Math.min(last - 1, Math.max(first + 1, split))
-  // Tangent at the split from a few points either side, so pixel noise can't tilt it.
-  const k = Math.min(3, split - first, last - split)
-  const center = norm(sub(d[split - k], d[split + k]))
+  // Tangent at the split from a few points either side, so pixel noise can't tilt it
+  // (closer points if those coincide, as they can at the seam of a tiny closed loop).
+  let center: Pt = { x: 0, y: 0 }
+  for (let k = Math.min(3, split - first, last - split); k >= 1 && len(center) === 0; k--) {
+    center = norm(sub(d[split - k], d[split + k]))
+  }
+  if (len(center) === 0) center = norm(sub(d[first], d[last]))
   fitCubic(d, first, split, tHat1, center, error, out, depth + 1)
   fitCubic(d, split, last, mul(center, -1), tHat2, error, out, depth + 1)
 }

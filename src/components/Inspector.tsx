@@ -49,8 +49,10 @@ export function Inspector({ svg, selection, onEdit, onSelectionChange, onDelete,
   const selectColor = (color: string) =>
     onSelectionChange(shapes.flatMap((el, i) => (paintOf(el, 'fill') === color ? [i] : [])))
 
-  const recolor = (from: string, to: string) =>
-    onEdit((_, all) => all.forEach((el) => paintOf(el, 'fill') === from && setPaint(el, 'fill', to)), `recolor:${from}`)
+  // Keyed by palette position, not color: while a picker is dragged the color changes on
+  // every step, but it must stay the same row (and one undo step).
+  const recolor = (slot: number, from: string, to: string) =>
+    onEdit((_, all) => all.forEach((el) => paintOf(el, 'fill') === from && setPaint(el, 'fill', to)), `recolor:${slot}`)
 
   return (
     <aside className="inspector" aria-label="Edit SVG">
@@ -115,9 +117,9 @@ export function Inspector({ svg, selection, onEdit, onSelectionChange, onDelete,
           Colors <span className="muted">{palette.length}</span>
         </div>
         <ul className="palette">
-          {palette.map(({ color, count }) => (
-            <li key={color}>
-              <ColorField value={color} compact onChange={(c) => recolor(color, c)} />
+          {palette.map(({ color, count }, i) => (
+            <li key={i}>
+              <ColorField value={color} compact onChange={(c) => recolor(i, color, c)} />
               <button className="palette-name" onClick={() => selectColor(color)} title="Select shapes with this color">
                 <code>{color}</code>
                 <span className="muted">{count}</span>

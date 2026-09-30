@@ -8,8 +8,11 @@ interface State<T> {
   future: T[]
 }
 
-/** Snapshot-based undo/redo: every committed edit stores the whole document. */
-export function useHistory<T>() {
+/**
+ * Snapshot-based undo/redo: every committed edit stores the whole document.
+ * `same` decides when a push changes nothing (and so records no step).
+ */
+export function useHistory<T>(same: (a: T, b: T) => boolean = Object.is) {
   const [s, setS] = useState<State<T>>({ past: [], present: null, future: [] })
 
   const last = useRef<{ key?: string; at: number }>({ at: 0 })
@@ -23,12 +26,12 @@ export function useHistory<T>() {
     const merge = coalesce !== undefined && last.current.key === coalesce && now - last.current.at < 1500
     last.current = { key: coalesce, at: now }
     setS((prev) => {
-      if (prev.present === value) return prev
+      if (prev.present !== null && same(prev.present, value)) return prev
       if (merge && prev.present !== null) return { ...prev, present: value, future: [] }
       const past = prev.present === null ? prev.past : [...prev.past, prev.present].slice(-LIMIT)
       return { past, present: value, future: [] }
     })
-  }, [])
+  }, [same])
 
   const undo = useCallback(() => {
     last.current = { at: 0 }

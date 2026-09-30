@@ -12,9 +12,23 @@ import { hasSolidBackground } from './lib/raster.ts'
 import { editSvg, matrixOf, setMatrix, SHAPE_SELECTOR } from './lib/svgdoc.ts'
 import type { TraceResult } from './lib/vectorize.ts'
 import { useHistory } from './lib/useHistory.ts'
-import { Cancelled, optimizer, tracer } from './lib/workers.ts'
+import { Cancelled, exporter, optimizer, tracer } from './lib/workers.ts'
 
 type Backdrop = 'checker' | 'light' | 'dark'
+
+/** What a trace produced besides the SVG itself (crop, counts, timing). */
+type Trace = Omit<TraceResult, 'svg'> & { ms: number }
+
+/**
+ * A history entry: the SVG plus the trace it came from, so undoing across a re-trace
+ * also restores the matching preview crop and caption.
+ */
+interface Doc {
+  svg: string
+  trace: Trace
+}
+
+const sameDoc = (a: Doc, b: Doc) => a.svg === b.svg && a.trace === b.trace
 
 const ZOOMS = [0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8]
 
@@ -30,14 +44,15 @@ export function App() {
   const [tracing, setTracing] = useState(false)
   const [progress, setProgress] = useState(0)
   const [traceError, setTraceError] = useState<string>()
-  const [info, setInfo] = useState<(TraceResult & { ms: number }) | null>(null)
   const [selection, setSelection] = useState<number[]>([])
   const [optimized, setOptimized] = useState<(OptimizeResult & { source: string }) | null>(null)
   const [zoom, setZoom] = useState(1)
   const [backdrop, setBackdrop] = useState<Backdrop>('checker')
   const [dragOver, setDragOver] = useState(false)
-  const history = useHistory<string>()
-  const svg = history.present
+  const history = useHistory<Doc>(sameDoc)
+  const doc = history.present
+  const svg = doc?.svg ?? null
+  const info = doc?.trace ?? null
   const { push } = history
   const rawBytes = useMemo(() => (svg ? byteLength(svg) : 0), [svg])
   const solidBackground = useMemo(() => (image ? hasSolidBackground(image.bitmap) : false), [image])
@@ -55,7 +70,6 @@ export function App() {
       history.reset()
       setSelection([])
       setOptimized(null)
-      setInfo(null)
       setZoom(1)
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : 'Could not open that image.')
@@ -71,7 +85,6 @@ export function App() {
     if (image) URL.revokeObjectURL(image.url)
     setImage(null)
     history.reset()
-    setInfo(null)
     setOptimized(null)
     setSelection([])
   }
@@ -101,11 +114,11 @@ export function App() {
       setProgress(0)
       const t0 = performance.now()
       try {
-        const result = await tracer.run({ bitmap: image.bitmap, settings }, (v) => alive && setProgress(v))
+        const scale = image.width / image.bitmap.width
+        const { svg: out, ...trace } = await tracer.run({ bitmap: image.bitmap, settings, scale }, (v) => alive && setProgress(v))
         if (!alive) return
-        setInfo({ ...result, ms: performance.now() - t0 })
         setSelection([])
-        push(result.svg)
+        push({ svg: out, trace: { ...trace, ms: performance.now() - t0 } })
         setTracing(false)
       } catch (e) {
         if (e instanceof Cancelled || !alive) return
@@ -143,7 +156,7 @@ export function App() {
     if (!svg) return ''
     if (optimized?.source === svg) return optimized.svg
     try {
-      const r = await optimizer.run({ svg })
+      const r = await exporter.run({ svg })
       setOptimized({ ...r, source: svg })
       return r.svg
     } catch {
@@ -177,11 +190,19 @@ export function App() {
 
   // ---- Editing ---------------------------------------------------------------------------
 
+  /** Records an edited SVG; it keeps the trace info of the document it was made from. */
+  const commit = useCallback(
+    (next: string, coalesce?: string) => {
+      if (doc) push({ svg: next, trace: doc.trace }, coalesce)
+    },
+    [doc, push],
+  )
+
   const applyEdit = useCallback(
     (fn: Edit, coalesce?: string) => {
-      if (svg) push(editSvg(svg, fn), coalesce)
+      if (doc) commit(editSvg(doc.svg, fn), coalesce)
     },
-    [svg, push],
+    [doc, commit],
   )
 
   const deleteSelection = useCallback(() => {
@@ -373,7 +394,7 @@ export function App() {
                     selection={selection}
                     zoom={zoom}
                     onSelectionChange={setSelection}
-                    onCommit={(s) => push(s)}
+                    onCommit={(s) => commit(s)}
                   />
                 )}
                 {tracing && (
