@@ -63,10 +63,14 @@ class LatestJobWorker<Req, Res> {
   }
 }
 
-export const tracer = new LatestJobWorker<{ bitmap: Bitmap; settings: TraceSettings }, TraceResult>(
+export const tracer = new LatestJobWorker<{ bitmap: Bitmap; settings: TraceSettings; scale: number }, TraceResult>(
   () => new Worker(new URL('../workers/trace.worker.ts', import.meta.url), { type: 'module' }),
 )
 
-export const optimizer = new LatestJobWorker<{ svg: string }, OptimizeResult>(
-  () => new Worker(new URL('../workers/optimize.worker.ts', import.meta.url), { type: 'module' }),
-)
+const optimizeWorker = () => new Worker(new URL('../workers/optimize.worker.ts', import.meta.url), { type: 'module' })
+
+/** Keeps the size readout current while editing (each edit supersedes the last). */
+export const optimizer = new LatestJobWorker<{ svg: string }, OptimizeResult>(optimizeWorker)
+
+/** Download/Copy get their own worker, so a background re-optimization can't cancel them. */
+export const exporter = new LatestJobWorker<{ svg: string }, OptimizeResult>(optimizeWorker)

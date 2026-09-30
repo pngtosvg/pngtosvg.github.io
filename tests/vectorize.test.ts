@@ -89,3 +89,74 @@ test('a fully transparent image gives an empty SVG instead of failing', () => {
   assert.equal(r.colors.length, 0)
   rasterize(r.svg)
 })
+
+/** Smallest alpha anywhere in the traced SVG rendered at `scale`× (255 = fully covered). */
+function minAlpha(svg: string, width: number, scale: number) {
+  const out = rasterize(svg, width * scale)
+  let min = 255
+  for (let i = 3; i < out.data.length; i += 4) min = Math.min(min, out.data[i])
+  return min
+}
+
+test('sharpened notches never open pinholes between separate shapes', () => {
+  // A curved stroke whose tight bend leaves a narrow notch of the background color.
+  const art =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="32"><rect width="40" height="32" fill="#ff99ee"/>' +
+    '<path d="M35.7 15.5 Q2.4 15.7 26.6 22.9" stroke="#33cc99" stroke-width="3.7" fill="none"/></svg>'
+  const src = rasterize(art)
+  for (const id of ['logo', 'icon'] as const) {
+    const { svg } = traceImage(src, settingsForPreset(id))
+    for (const scale of [2, 8]) assert.ok(minAlpha(svg, src.width, scale) >= 250, `${id} at ${scale}x`)
+  }
+})
+
+test('random opaque artwork traces without gaps', () => {
+  let seed = 99
+  const rnd = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296
+  const color = () => '#' + Math.floor(rnd() * 0xffffff).toString(16).padStart(6, '0')
+  for (let t = 0; t < 12; t++) {
+    const w = 30 + Math.floor(rnd() * 60), h = 30 + Math.floor(rnd() * 60)
+    const p = () => `${(rnd() * w).toFixed(1)} ${(rnd() * h).toFixed(1)}`
+    let body = `<rect width="${w}" height="${h}" fill="${color()}"/>`
+    for (let k = 0; k < 4; k++) {
+      body += k % 2
+        ? `<path d="M${p()} Q${p()} ${p()}" stroke="${color()}" stroke-width="${(1 + rnd() * 5).toFixed(1)}" fill="none"/>`
+        : `<polygon points="${p()} ${p()} ${p()}" fill="${color()}"/>`
+    }
+    const src = rasterize(`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">${body}</svg>`)
+    for (const id of ['logo', 'icon'] as const) {
+      const { svg } = traceImage(src, settingsForPreset(id))
+      assert.ok(minAlpha(svg, w, 3) >= 250, `artwork ${t}, ${id}`)
+    }
+  }
+})
+
+test('tiny dots become round shapes wound like their neighbours', () => {
+  const art =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><rect x="2" y="2" width="8" height="16"/>' +
+    '<circle cx="15.5" cy="10.5" r="0.8"/></svg>'
+  const r = traceImage(rasterize(art), { ...settingsForPreset('logo'), detail: 100, cropTransparent: false })
+  const paths = [...r.svg.matchAll(/ d="([^"]+)"/g)].map((m) => m[1])
+  assert.equal(paths.length, 2)
+  const dotSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><path d="${paths[1]}"/></svg>`
+  const img = rasterize(dotSvg, 200)
+  let ink = 0
+  for (let i = 3; i < img.data.length; i += 4) ink += img.data[i] / 255
+  const area = ink / 100 // px² at 1x
+  assert.ok(Math.abs(area - Math.PI * 0.8 * 0.8) < 0.5, `dot area ${area.toFixed(2)}`)
+  // Same winding as the rectangle: both are filled shapes, not holes.
+  const signed = (d: string) => {
+    const n = d.match(/-?\d*\.?\d+/g)!.map(Number)
+    let a = 0
+    for (let i = 0; i + 3 < n.length; i += 2) a += n[i] * n[i + 3] - n[i + 2] * n[i + 1]
+    return Math.sign(a)
+  }
+  assert.equal(signed(paths[1]), signed(paths[0]))
+})
+
+test('images decoded smaller than their real size still export at full size', () => {
+  const r = traceImage(rasterize(fixture('logo.svg')), settingsForPreset('logo'), undefined, 2.5)
+  const [, w, h, vw, vh] = r.svg.match(/width="(\d+)" height="(\d+)" viewBox="0 0 (\d+) (\d+)"/)!.map(Number)
+  assert.equal(w, Math.round(vw * 2.5))
+  assert.equal(h, Math.round(vh * 2.5))
+})
