@@ -1,14 +1,21 @@
 import { marchingSquares, pointInPolygon, signedArea } from './contour.ts'
+import { blur121 } from './filters.ts'
 import { fitOutline, type FitOptions, type Outline } from './fit.ts'
 import { getPreset, type TraceSettings } from './presets.ts'
 import { quantize } from './quantize.ts'
 import { crop, opaqueBounds, removeBackground, resize, type Bitmap, type Rect } from './raster.ts'
+import { refineColors, type Fill } from './regions.ts'
 
 export interface TraceResult {
   svg: string
   width: number
   height: number
+  /** Flat colors used, bottom layer first. */
   colors: string[]
+  /** Number of gradients used. */
+  gradients: number
+  /** With background removal: areas of the background color enclosed by the artwork. */
+  enclosed: number
   paths: number
   /** Region of the source image that the SVG covers. */
   crop: Rect
@@ -35,7 +42,13 @@ export function traceImage(
   displayScale = 1,
 ): TraceResult {
   const preset = getPreset(settings.preset)
-  let img = settings.removeBackground ? removeBackground(source) : source
+  let img = source
+  let enclosed = 0
+  if (settings.removeBackground) {
+    const removal = removeBackground(source, { enclosed: settings.clearEnclosed })
+    img = removal.image
+    enclosed = removal.enclosed
+  }
 
   // The SVG covers the solid part of the image; tracing uses one extra pixel around it
   // so faint anti-aliased edge pixels still place the outline precisely.
@@ -70,7 +83,19 @@ export function traceImage(
     alphaThreshold: ALPHA_THRESHOLD,
     removeBlends: preset.flat,
   })
-  onProgress?.(0.25)
+  onProgress?.(0.2)
+
+  const d = settings.detail / 100
+  const s = settings.smoothness / 100
+  const minArea = ((0.8 + (1 - d) * 4.5) * (preset.flat ? 1 : 1.6)) ** 2
+
+  // Region analysis: exact flat colors, kept accents, gradients.
+  const fills = refineColors(img, pal, {
+    gradients: settings.gradients !== false,
+    minRegion: Math.max(48, Math.round(minArea * 2)),
+    alphaThreshold: ALPHA_THRESHOLD,
+  })
+  onProgress?.(0.3)
 
   // Bottom-to-top: biggest areas first, so small details sit on top.
   const order = pal.counts.map((_, i) => i).sort((a, b) => pal.counts[b] - pal.counts[a])
@@ -87,8 +112,6 @@ export function traceImage(
     rSecond[p] = pal.second[p] < 0 ? -1 : rank[pal.second[p]]
   }
 
-  const d = settings.detail / 100
-  const s = settings.smoothness / 100
   // Small images get a tighter fit: they are usually scaled up, where every tenth of a
   // source pixel shows.
   const sizeFactor = Math.min(1, Math.max(0.35, Math.max(w, h) / 256))
@@ -103,7 +126,6 @@ export function traceImage(
     // Separate shapes extend only ~1px under the colors above them.
     sharpenConcave: settings.layering === 'separate' ? 0.8 : undefined,
   }
-  const minArea = ((0.8 + (1 - d) * 4.5) * (preset.flat ? 1 : 1.6)) ** 2
   const decimals = Math.max(outW, outH) <= 128 ? 2 : 1
   const xf: PathTransform = { sx, sy, offX: offX + PAD * sx, offY: offY + PAD * sy, decimals }
 
@@ -114,7 +136,24 @@ export function traceImage(
   const own = new Float32Array(n)
   const reach = new Float32Array(n)
   const field = new Float32Array(n)
+  const scratch = new Float32Array(n)
   const parts: string[] = []
+  const defs: string[] = []
+  const paint = new Map<number, string>()
+  const paintOf = (entry: number) => {
+    let v = paint.get(entry)
+    if (!v) {
+      const f = fills[entry]
+      if (f.type === 'flat') v = hex(f.color)
+      else {
+        const id = `g${defs.length + 1}`
+        defs.push(gradientDef(id, f, sx, sy, offX, offY))
+        v = `url(#${id})`
+      }
+      paint.set(entry, v)
+    }
+    return v
+  }
   let pathCount = 0
 
   for (let r = 0; r < order.length; r++) {
@@ -129,7 +168,7 @@ export function traceImage(
     }
     if (!preset.flat) {
       // Photos: soften pixel staircases and noise before tracing.
-      for (const g of [own, field]) { blur121(g, w, h); blur121(g, w, h) }
+      for (const g of [own, field]) { blur121(g, w, h, scratch); blur121(g, w, h, scratch) }
     }
     if (settings.layering === 'separate' && r < order.length - 1) {
       // Extend each shape ~1px underneath the colors above it (where they hide it), so
@@ -141,7 +180,7 @@ export function traceImage(
       // the fitting tolerance of both shapes plus notch sharpening (a max filter would
       // leave a pixel staircase for the tracer to follow).
       for (let p = 0; p < n; p++) reach[p] = Math.min(1, own[p] * 4)
-      for (let k = 0; k < UNDERLAP_BLUR; k++) blur121(reach, w, h)
+      for (let k = 0; k < UNDERLAP_BLUR; k++) blur121(reach, w, h, scratch)
       for (let p = 0; p < n; p++) field[p] = Math.max(own[p], Math.min(Math.min(1, reach[p] * UNDERLAP_GAIN), field[p] - own[p]))
     }
 
@@ -155,24 +194,28 @@ export function traceImage(
         if (o) dParts.push(outlineToPath(o, xf))
       }
       if (!dParts.length) continue
-      parts.push(`<path fill="${hex(pal.colors[order[r]])}" d="${dParts.join('')}"/>`)
+      parts.push(`<path fill="${paintOf(order[r])}" d="${dParts.join('')}"/>`)
       pathCount++
     }
-    onProgress?.(0.25 + (0.75 * (r + 1)) / order.length)
+    onProgress?.(0.3 + (0.7 * (r + 1)) / order.length)
   }
 
   const dw = Math.round(outW * displayScale), dh = Math.round(outH * displayScale)
   const svg =
     `<svg xmlns="http://www.w3.org/2000/svg" width="${dw}" height="${dh}" viewBox="0 0 ${outW} ${outH}">\n` +
+    (defs.length ? `<defs>\n${defs.join('\n')}\n</defs>\n` : '') +
     parts.join('\n') +
     (parts.length ? '\n' : '') +
     `</svg>\n`
 
+  const used = [...paint.values()]
   return {
     svg,
     width: outW,
     height: outH,
-    colors: order.map((c) => hex(pal.colors[c])),
+    colors: used.filter((v) => v.startsWith('#')),
+    gradients: defs.length,
+    enclosed,
     paths: pathCount,
     crop: region,
   }
@@ -263,6 +306,20 @@ function padEdges(src: Float32Array, w: number, h: number, pad: number): Float32
   return out
 }
 
+/** SVG gradient element for a fill, in the output's user space. */
+function gradientDef(id: string, f: Exclude<Fill, { type: 'flat' }>, sx: number, sy: number, offX: number, offY: number): string {
+  const X = (v: number) => num(Math.round((v * sx - offX) * 100) / 100)
+  const Y = (v: number) => num(Math.round((v * sy - offY) * 100) / 100)
+  const stops = f.stops
+    .map((st) => `<stop offset="${num(Math.round(st.offset * 1000) / 1000)}" stop-color="${hex(st.color)}"/>`)
+    .join('')
+  if (f.type === 'linear') {
+    return `<linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="${X(f.x1)}" y1="${Y(f.y1)}" x2="${X(f.x2)}" y2="${Y(f.y2)}">${stops}</linearGradient>`
+  }
+  const r = num(Math.round(f.r * Math.sqrt(sx * sy) * 100) / 100)
+  return `<radialGradient id="${id}" gradientUnits="userSpaceOnUse" cx="${X(f.cx)}" cy="${Y(f.cy)}" r="${r}">${stops}</radialGradient>`
+}
+
 function num(v: number) {
   return (Object.is(v, -0) ? 0 : v).toString()
 }
@@ -314,24 +371,6 @@ function despeckle(main: Int16Array, second: Int16Array, mix: Float32Array, alph
       second[p] = -1
       mix[p] = 0
       if (best < 0) alpha[p] = 0
-    }
-  }
-}
-
-/** In-place [1 2 1]/4 blur in both directions (softens pixel staircases in photos). */
-function blur121(f: Float32Array, w: number, h: number) {
-  const tmp = new Float32Array(f.length)
-  for (let y = 0; y < h; y++) {
-    const row = y * w
-    for (let x = 0; x < w; x++) {
-      const l = f[row + (x > 0 ? x - 1 : x)], c = f[row + x], r = f[row + (x < w - 1 ? x + 1 : x)]
-      tmp[row + x] = (l + 2 * c + r) / 4
-    }
-  }
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const u = tmp[(y > 0 ? y - 1 : y) * w + x], c = tmp[y * w + x], dn = tmp[(y < h - 1 ? y + 1 : y) * w + x]
-      f[y * w + x] = (u + 2 * c + dn) / 4
     }
   }
 }

@@ -10,8 +10,12 @@ export interface TraceSettings {
   smoothness: number
   cropTransparent: boolean
   removeBackground: boolean
+  /** With removeBackground: also clear areas of the background color that the artwork encloses (letter counters, the inside of rings). */
+  clearEnclosed: boolean
   /** "separate": every color is its own shape (best for editing). "stacked": lower colors fill in under upper ones (smallest file). */
   layering: 'separate' | 'stacked'
+  /** Turn smooth color transitions into SVG gradients instead of bands of flat color. */
+  gradients: boolean
 }
 
 export interface Preset {
@@ -82,6 +86,8 @@ export function settingsForPreset(id: PresetId, keep?: Partial<TraceSettings>): 
     preset: id,
     cropTransparent: keep?.cropTransparent ?? true,
     removeBackground: keep?.removeBackground ?? false,
+    clearEnclosed: keep?.clearEnclosed ?? false,
+    gradients: keep?.gradients ?? true,
     ...p.defaults,
   }
 }

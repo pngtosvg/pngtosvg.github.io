@@ -319,12 +319,26 @@ export function App() {
   }
 
   const view = info?.crop ?? { x: 0, y: 0, width: image.bitmap.width, height: image.bitmap.height }
+  const summary = info
+    ? [
+        plural(info.colors.length, 'color'),
+        info.gradients ? plural(info.gradients, 'gradient') : '',
+        plural(info.paths, 'path'),
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    : ''
   const trimmed = view.width !== image.bitmap.width || view.height !== image.bitmap.height
 
   return (
     <div className={`workspace ${dragOver ? 'drag-over' : ''}`} {...dropProps}>
       <div className="topbar">
-        <Controls settings={settings} onChange={setSettings} solidBackground={solidBackground} />
+        <Controls
+          settings={settings}
+          onChange={setSettings}
+          solidBackground={solidBackground}
+          enclosedAreas={info?.enclosed}
+        />
         <div className="file-chip" title={image.name}>
           <span className="file-name">{image.name}</span>
           <span className="muted small">
@@ -380,9 +394,12 @@ export function App() {
             <figure className="pane">
               <figcaption>
                 <span>SVG output</span>
-                <span className="muted small">
-                  {info ? `${plural(info.colors.length, 'color')} · ${plural(info.paths, 'path')} · ${Math.round(info.ms)} ms` : ''}
-                </span>
+                {info && (
+                  <span className="muted small" title={`${summary} · ${Math.round(info.ms)} ms`}>
+                    {summary}
+                    <span className="caption-time"> · {Math.round(info.ms)} ms</span>
+                  </span>
+                )}
               </figcaption>
               <div
                 className={`viewport bg-${backdrop}`}

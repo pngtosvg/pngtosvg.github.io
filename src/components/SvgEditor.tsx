@@ -195,7 +195,7 @@ export function SvgEditor({ svg, selection, zoom, onSelectionChange, onCommit }:
               key={c}
               className={`handle ${c}`}
               onPointerDown={(e) => onHandleDown(e, c)}
-              aria-label="Resize"
+              aria-hidden="true"
             />
           ))}
         </div>

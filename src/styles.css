@@ -595,6 +595,7 @@ input[type='range'] {
 .pane {
   margin: 0;
   min-width: 0;
+  container-type: inline-size;
 }
 .pane figcaption {
   display: flex;
@@ -608,6 +609,10 @@ input[type='range'] {
   color: var(--muted);
   margin-bottom: 8px;
 }
+.pane figcaption > span:first-child {
+  flex: none;
+  white-space: nowrap;
+}
 .pane figcaption .small {
   text-transform: none;
   letter-spacing: 0;
@@ -615,6 +620,11 @@ input[type='range'] {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+@container (max-width: 400px) {
+  .caption-time {
+    display: none;
+  }
 }
 
 .viewport {
@@ -793,6 +803,53 @@ input[type='range'] {
 }
 .color-field.compact {
   flex: none;
+}
+.gradient-field {
+  position: relative;
+  flex: 1;
+  min-width: 80px;
+  height: 30px;
+  border-radius: 7px;
+  border: 1px solid var(--border-strong);
+}
+.gradient-field.compact {
+  flex: none;
+  width: 96px;
+}
+.gradient-field .stop {
+  position: absolute;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  margin: -8px 0 0 -8px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.4), 0 1px 3px rgb(0 0 0 / 0.3);
+  cursor: pointer;
+}
+.gradient-field .stop:hover,
+.gradient-field .stop:focus-within {
+  z-index: 1;
+  transform: scale(1.15);
+}
+.gradient-field .stop:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.gradient-field .stop input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+  border: 0;
+  padding: 0;
+}
+.links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
 }
 .swatch {
   position: relative;

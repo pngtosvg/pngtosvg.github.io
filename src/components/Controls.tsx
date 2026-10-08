@@ -7,9 +7,11 @@ interface Props {
   onChange: (settings: TraceSettings) => void
   /** The image has an opaque, uniform background that could be removed. */
   solidBackground?: boolean
+  /** Areas of the removed background's color that the artwork encloses (from the last trace). */
+  enclosedAreas?: number
 }
 
-export function Controls({ settings, onChange, solidBackground }: Props) {
+export function Controls({ settings, onChange, solidBackground, enclosedAreas = 0 }: Props) {
   const [open, setOpen] = useState(false)
   const set = <K extends keyof TraceSettings>(key: K, value: TraceSettings[K]) => onChange({ ...settings, [key]: value })
   const preset = PRESETS.find((p) => p.id === settings.preset)!
@@ -52,6 +54,17 @@ export function Controls({ settings, onChange, solidBackground }: Props) {
           </button>
         </p>
       )}
+      {settings.removeBackground && enclosedAreas > 0 && (
+        <p className="suggest small">
+          {enclosedAreas === 1 ? 'An enclosed area' : `${enclosedAreas} enclosed areas`} of the background color
+          {settings.clearEnclosed
+            ? enclosedAreas === 1 ? ' was cleared too.' : ' were cleared too.'
+            : enclosedAreas === 1 ? ' is still filled (e.g. inside a letter).' : ' are still filled (e.g. inside letters).'}{' '}
+          <button className="link-btn" onClick={() => set('clearEnclosed', !settings.clearEnclosed)}>
+            {settings.clearEnclosed ? 'Keep filled' : enclosedAreas === 1 ? 'Clear it too' : 'Clear them too'}
+          </button>
+        </p>
+      )}
       {open && (
         <div className="adjust" id="adjust-panel">
           <Slider label="Colors" min={1} max={64} value={settings.colors} onChange={(v) => set('colors', v)} />
@@ -67,6 +80,18 @@ export function Controls({ settings, onChange, solidBackground }: Props) {
               label="Remove solid background"
               checked={settings.removeBackground}
               onChange={(v) => set('removeBackground', v)}
+            />
+            {settings.removeBackground && (
+              <Toggle
+                label="Also inside shapes"
+                checked={settings.clearEnclosed}
+                onChange={(v) => set('clearEnclosed', v)}
+              />
+            )}
+            <Toggle
+              label="Detect gradients"
+              checked={settings.gradients}
+              onChange={(v) => set('gradients', v)}
             />
             <label className="select-field">
               <span>Layers</span>

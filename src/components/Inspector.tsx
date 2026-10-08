@@ -1,5 +1,17 @@
 import { useMemo, useState, useEffect } from 'react'
-import { getShapes, normalizeColor, paintOf, paletteOf, setPaint } from '../lib/svgdoc.ts'
+import {
+  getShapes,
+  gradientColorAt,
+  gradientCss,
+  gradientOf,
+  normalizeColor,
+  ownGradient,
+  paintOf,
+  paletteOf,
+  setPaint,
+  setStopColor,
+  type Gradient,
+} from '../lib/svgdoc.ts'
 import { BackIcon, DuplicateIcon, FrontIcon, TrashIcon } from './icons.tsx'
 
 export type Edit = (root: SVGSVGElement, shapes: SVGGraphicsElement[]) => void
@@ -29,6 +41,7 @@ export function Inspector({ svg, selection, onEdit, onSelectionChange, onDelete,
   const stroke = first ? paintOf(first, 'stroke') : 'none'
   const strokeWidth = first ? parseFloat(first.getAttribute('stroke-width') ?? '1') || 1 : 1
   const mixedFill = selected.some((el) => paintOf(el, 'fill') !== fill)
+  const gradient = mixedFill ? null : gradientOf(doc, fill)
 
   const editSelected = (fn: (el: Element) => void, key: string) =>
     onEdit((_, all) => selection.forEach((i) => all[i] && fn(all[i])), key)
@@ -54,6 +67,14 @@ export function Inspector({ svg, selection, onEdit, onSelectionChange, onDelete,
   const recolor = (slot: number, from: string, to: string) =>
     onEdit((_, all) => all.forEach((el) => paintOf(el, 'fill') === from && setPaint(el, 'fill', to)), `recolor:${slot}`)
 
+  // A gradient shared with shapes outside the selection is copied first, so only the
+  // selection changes.
+  const setSelectedStop = (index: number, color: string) =>
+    onEdit((root, all) => {
+      const els = selection.map((i) => all[i]).filter(Boolean)
+      setStopColor(root, ownGradient(root, all, els, fill), index, color)
+    }, `stop:${index}`)
+
   return (
     <aside className="inspector" aria-label="Edit SVG">
       {selected.length ? (
@@ -63,11 +84,15 @@ export function Inspector({ svg, selection, onEdit, onSelectionChange, onDelete,
           </div>
           <div className="field">
             <span className="field-label">Fill</span>
-            <ColorField
-              value={fill}
-              mixed={mixedFill}
-              onChange={(c) => editSelected((el) => setPaint(el, 'fill', c), 'fill')}
-            />
+            {gradient ? (
+              <GradientField gradient={gradient} onStopChange={setSelectedStop} />
+            ) : (
+              <ColorField
+                value={fill}
+                mixed={mixedFill}
+                onChange={(c) => editSelected((el) => setPaint(el, 'fill', c), 'fill')}
+              />
+            )}
             <button
               className={`chip ${fill === 'none' ? 'on' : ''}`}
               onClick={() => editSelected((el) => setPaint(el, 'fill', fill === 'none' ? '#000000' : 'none'), 'fill-none')}
@@ -100,7 +125,20 @@ export function Inspector({ svg, selection, onEdit, onSelectionChange, onDelete,
             <button className="icon-btn danger" onClick={onDelete} title="Delete (Del)"><TrashIcon /></button>
           </div>
           {fill !== 'none' && !mixedFill && (
-            <button className="link-btn" onClick={() => selectColor(fill)}>Select same color</button>
+            <div className="links">
+              <button className="link-btn" onClick={() => selectColor(fill)}>
+                {gradient ? 'Select same gradient' : 'Select same color'}
+              </button>
+              {gradient && (
+                <button
+                  className="link-btn"
+                  onClick={() => editSelected((el) => setPaint(el, 'fill', gradientColorAt(gradient, 0.5)), 'fill')}
+                  title="Replace the gradient with its middle color"
+                >
+                  Make solid
+                </button>
+              )}
+            </div>
           )}
         </section>
       ) : (
@@ -117,15 +155,26 @@ export function Inspector({ svg, selection, onEdit, onSelectionChange, onDelete,
           Colors <span className="muted">{palette.length}</span>
         </div>
         <ul className="palette">
-          {palette.map(({ color, count }, i) => (
-            <li key={i}>
-              <ColorField value={color} compact onChange={(c) => recolor(i, color, c)} />
-              <button className="palette-name" onClick={() => selectColor(color)} title="Select shapes with this color">
-                <code>{color}</code>
-                <span className="muted">{count}</span>
-              </button>
-            </li>
-          ))}
+          {palette.map(({ color, count }, i) => {
+            const g = gradientOf(doc, color)
+            return (
+              <li key={i}>
+                {g ? (
+                  <GradientField
+                    gradient={g}
+                    compact
+                    onStopChange={(k, c) => onEdit((root) => setStopColor(root, color, k, c), `stop:${i}:${k}`)}
+                  />
+                ) : (
+                  <ColorField value={color} compact onChange={(c) => recolor(i, color, c)} />
+                )}
+                <button className="palette-name" onClick={() => selectColor(color)} title="Select shapes with this fill">
+                  <code>{g ? `${g.type} gradient` : color}</code>
+                  <span className="muted">{count}</span>
+                </button>
+              </li>
+            )
+          })}
         </ul>
       </section>
     </aside>
@@ -136,16 +185,48 @@ function defaultStroke(size: number) {
   return Math.max(1, Math.round(size / 150))
 }
 
+/** A gradient as a bar, with a color picker at each stop. */
+function GradientField(props: { gradient: Gradient; compact?: boolean; onStopChange: (index: number, color: string) => void }) {
+  const { gradient, compact } = props
+  const n = gradient.stops.length
+  return (
+    <span
+      className={`gradient-field ${compact ? 'compact' : ''}`}
+      style={{ background: gradientCss(gradient) }}
+      title={`${gradient.type === 'linear' ? 'Linear' : 'Radial'} gradient`}
+    >
+      {gradient.stops.map((s, k) => (
+        <label
+          key={k}
+          className="stop"
+          style={{ left: `calc(9px + (100% - 18px) * ${s.offset})`, background: s.color }}
+          title={`Stop ${k + 1}: ${s.color}`}
+        >
+          <input
+            type="color"
+            aria-label={`Gradient stop ${k + 1} of ${n}`}
+            value={s.color}
+            onChange={(e) => props.onStopChange(k, e.target.value)}
+          />
+        </label>
+      ))}
+    </span>
+  )
+}
+
 interface ColorFieldProps {
   value: string
   mixed?: boolean
   compact?: boolean
+  /** Accessible name of the color picker. */
+  label?: string
   onChange: (color: string) => void
 }
 
-function ColorField({ value, mixed, compact, onChange }: ColorFieldProps) {
+function ColorField({ value, mixed, compact, label = 'Pick color', onChange }: ColorFieldProps) {
+  const isColor = /^#[0-9a-f]{6}$/.test(value)
   const none = value === 'none'
-  const shown = mixed || none ? '' : value
+  const shown = mixed || !isColor ? '' : value
   const [text, setText] = useState(shown)
   useEffect(() => setText(shown), [shown])
   const commitText = () => {
@@ -157,8 +238,8 @@ function ColorField({ value, mixed, compact, onChange }: ColorFieldProps) {
   }
   return (
     <span className={`color-field ${compact ? 'compact' : ''}`}>
-      <label className={`swatch ${none ? 'none' : ''}`} style={none ? undefined : { background: value }} title="Pick color">
-        <input type="color" value={none ? '#000000' : value} onChange={(e) => onChange(e.target.value)} />
+      <label className={`swatch ${none ? 'none' : ''}`} style={isColor ? { background: value } : undefined} title={label}>
+        <input type="color" aria-label={label} value={isColor ? value : '#000000'} onChange={(e) => onChange(e.target.value)} />
       </label>
       {!compact && (
         <input
