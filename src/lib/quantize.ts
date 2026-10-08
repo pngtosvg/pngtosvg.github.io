@@ -35,7 +35,7 @@ for (let i = 0; i < 256; i++) {
   srgbToLinear[i] = c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
 }
 
-function toOklab(r: number, g: number, b: number): Lab {
+export function toOklab(r: number, g: number, b: number): Lab {
   const lr = srgbToLinear[r], lg = srgbToLinear[g], lb = srgbToLinear[b]
   const l = Math.cbrt(0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb)
   const m = Math.cbrt(0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb)

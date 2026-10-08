@@ -41,18 +41,26 @@ export function crop(img: Bitmap, r: Rect): Bitmap {
   return { width: r.width, height: r.height, data: out }
 }
 
+export interface BackgroundRemoval {
+  image: Bitmap
+  /** Areas of the background color enclosed by the artwork (letter counters, the inside of rings). */
+  enclosed: number
+}
+
 /**
  * Makes a solid background transparent by flood-filling from the image border.
  * Only pixels connected to the edge and close to the dominant border color are removed,
- * so matching colors inside the artwork (e.g. white text) are kept. Along the cut, the
- * anti-aliased pixels are "un-blended" from the background color, so edges come out
- * softly transparent instead of keeping a fringe of the old background.
+ * so matching colors inside the artwork (e.g. white text) are kept, unless `enclosed`
+ * asks to clear enclosed areas of that color too. Along the cut, the anti-aliased
+ * pixels are "un-blended" from the background color, so edges come out softly
+ * transparent instead of keeping a fringe of the old background.
  */
-export function removeBackground(img: Bitmap, tolerance = 32): Bitmap {
+export function removeBackground(img: Bitmap, opts: { enclosed?: boolean; tolerance?: number } = {}): BackgroundRemoval {
   const { width: w, height: h } = img
+  const tolerance = opts.tolerance ?? 32
   const src = img.data
   const approx = borderColor(img)
-  if (!approx) return img
+  if (!approx) return { image: img, enclosed: 0 }
   const data = new Uint8ClampedArray(src)
   const tol2 = tolerance * tolerance * 3
   const removed = new Uint8Array(w * h)
@@ -81,8 +89,44 @@ export function removeBackground(img: Bitmap, tolerance = 32): Bitmap {
     if (y > 0) push(p - w)
     if (y < h - 1) push(p + w)
   }
-  if (!sn) return { width: w, height: h, data }
+  if (!sn) return { image: { width: w, height: h, data }, enclosed: 0 }
   const bg = [sr / sn, sg / sn, sb / sn]
+
+  // Areas of the background color that the fill couldn't reach: letter counters and the
+  // inside of rings, but just as well white parts of the artwork, so they are only
+  // cleared on request.
+  const isBackground = (p: number) => {
+    const i = p * 4
+    if (src[i + 3] < 16) return false
+    const dr = src[i] - bg[0], dg = src[i + 1] - bg[1], db = src[i + 2] - bg[2]
+    return dr * dr + dg * dg + db * db <= tol2
+  }
+  const minArea = Math.max(16, Math.round(w * h * 0.00002))
+  const visited = new Uint8Array(w * h)
+  const visit = (p: number) => {
+    if (removed[p] || visited[p] || !isBackground(p)) return
+    visited[p] = 1
+    stack.push(p)
+  }
+  const area: number[] = []
+  let enclosed = 0
+  for (let p0 = 0; p0 < w * h; p0++) {
+    if (removed[p0] || visited[p0] || !isBackground(p0)) continue
+    area.length = 0
+    visit(p0)
+    while (stack.length) {
+      const p = stack.pop()!
+      area.push(p)
+      const x = p % w, y = (p / w) | 0
+      if (x > 0) visit(p - 1)
+      if (x < w - 1) visit(p + 1)
+      if (y > 0) visit(p - w)
+      if (y < h - 1) visit(p + w)
+    }
+    if (area.length < minArea) continue
+    enclosed++
+    if (opts.enclosed) for (const p of area) { removed[p] = 1; data[p * 4 + 3] = 0 }
+  }
 
   // Soften the cut. Pixels within 2px of the removed area may be anti-aliased blends of
   // the background with the artwork: take the foreground color from the nearest pixel
@@ -146,7 +190,7 @@ export function removeBackground(img: Bitmap, tolerance = 32): Bitmap {
       data[i + 3] = a <= 0.004 ? 0 : src[i + 3] * a
     }
   }
-  return { width: w, height: h, data }
+  return { image: { width: w, height: h, data }, enclosed }
 }
 
 /** True if the image sits on an opaque, uniform background (e.g. a logo exported on white). */

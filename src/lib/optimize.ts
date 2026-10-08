@@ -22,6 +22,8 @@ export function optimizeSvg(svg: string): OptimizeResult {
         params: {
           overrides: {
             convertPathData: { floatPrecision: precision, transformPrecision: precision + 3 },
+            // Gradient stop offsets are fractions (0–1): coordinate precision would move them.
+            cleanupNumericValues: { floatPrecision: 3 },
           },
         },
       },
